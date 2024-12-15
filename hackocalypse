@@ -1,0 +1,171 @@
+# Implementation Code
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import plotly.express as px
+from prophet import Prophet
+from sklearn.ensemble import RandomForestRegressor
+from scipy.optimize import linprog
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
+
+# Data Handling Functions
+def fetch_real_time_data():
+    """Simulates fetching real-time data from an API."""
+    data = {
+        "Region": ["North", "South", "East", "West"],
+        "Food Supplies": [1500, 1200, 1700, 1000],
+        "Medical Kits": [300, 250, 350, 200],
+        "Shelters": [50, 45, 60, 40],
+        "People Affected": [5000, 4000, 6000, 3000],
+    }
+    return pd.DataFrame(data)
+
+# Forecasting Functions
+def forecast_resource_demand(df, resource_type):
+    """Forecast future resource demand using Prophet."""
+    try:
+        df_prophet = df[["Weeks", resource_type]].rename(columns={"Weeks": "ds", resource_type: "y"})
+        model = Prophet()
+        model.fit(df_prophet)
+        future = model.make_future_dataframe(periods=12, freq="W")  # Forecast 12 weeks ahead
+        forecast = model.predict(future)
+
+        # Plot the forecast
+        fig = model.plot(forecast)
+        return fig
+    except Exception as e:
+        return f"Error in forecasting: {e}"
+
+# Visualization Functions
+@st.cache_data
+def get_geolocations(regions):
+    """Fetch geolocations for a list of regions."""
+    geolocator = Nominatim(user_agent="resource_dashboard")
+    locations = []
+    for region in regions:
+        try:
+            location = geolocator.geocode(region, timeout=10)
+            if location:
+                locations.append((region, location.latitude, location.longitude))
+            else:
+                locations.append((region, np.nan, np.nan))  # Handle missing locations
+        except GeocoderTimedOut:
+            locations.append((region, np.nan, np.nan))  # Handle timeout errors
+    return pd.DataFrame(locations, columns=["Region", "Latitude", "Longitude"])
+
+@st.cache_data
+def visualize_resources_on_map(df):
+    """Plots resource distribution on an interactive map."""
+    map_data = get_geolocations(df["Region"].unique())
+    fig = px.scatter_geo(
+        map_data, lat="Latitude", lon="Longitude", text="Region", title="Resource Distribution"
+    )
+    fig.update_geos(showcoastlines=True, coastlinecolor="Black", showland=True, landcolor="LightGray")
+    return fig
+
+# Prediction Functions
+def predict_resource_demand_random_forest(historical_df):
+    """Predicts future resource demand using Random Forest Regressor."""
+    try:
+        resource_type = "Food Demand"  # Fixed to food demand for simplicity in this example.
+
+        X = historical_df[["Weeks"]]
+        y = historical_df[resource_type]
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
+
+        future_weeks = np.arange(21, 31).reshape(-1, 1)
+        predicted_demand = model.predict(future_weeks)
+
+        # Plot the prediction
+        fig, ax = plt.subplots()
+        ax.plot(historical_df["Weeks"], historical_df[resource_type], label="Historical Data", marker="o")
+        ax.plot(future_weeks, predicted_demand, label="Predicted Demand", linestyle="--")
+        ax.set_title(f"{resource_type} Prediction (Random Forest)")
+        ax.set_xlabel("Weeks")
+        ax.set_ylabel("Demand")
+        ax.legend()
+        return fig
+    except Exception as e:
+        return f"Error in Random Forest prediction: {e}"
+
+# Optimization Functions
+def optimize_resource_allocation(df):
+    """Uses linear programming to optimize resource allocation."""
+    try:
+        c = [-1, -1, -1]  # Minimize shortages (maximize the supply)
+        A = [
+            [1, 1, 0],  # Region 1 food supply + medical supply <= total resources
+            [0, 1, 1],  # Region 2 food supply + shelter supply <= total resources
+            [1, 0, 1]   # Region 3 food supply + shelter supply <= total resources
+        ]
+        b = [
+            df["Food Supplies"].sum(),
+            df["Medical Kits"].sum(),
+            df["Shelters"].sum()
+        ]  # Constraints derived dynamically from the data
+
+        # Solve the optimization problem
+        res = linprog(c, A_ub=A, b_ub=b, method="highs")
+
+        if res.success:
+            return res.x
+        else:
+            return "Optimization failed. Check constraints and inputs."
+    except Exception as e:
+        return f"Error in resource optimization: {e}"
+
+# API Layer
+def api_layer():
+    synthetic_data = {
+        "Weeks": np.arange(1, 21),
+        "Food Demand": np.random.randint(1000, 2000, 20),
+        "Medical Demand": np.random.randint(200, 500, 20)
+    }
+    return pd.DataFrame(synthetic_data)
+
+# Web Application
+def main():
+    st.title("Crisis Management Dashboard - Live Update")
+
+    # Fetch and display real-time data
+    df = fetch_real_time_data()
+    st.subheader("Resource Data")
+    st.write(df)
+
+    # Visualize resources on the map
+    st.subheader("Resource Distribution on Map")
+    map_fig = visualize_resources_on_map(df)
+    st.plotly_chart(map_fig)
+
+    # Generate synthetic historical data for prediction
+    historical_df = api_layer()
+
+    # Forecast resource demand using Prophet
+    st.subheader("Resource Demand Forecasting (Prophet)")
+    forecast_fig = forecast_resource_demand(historical_df, "Food Demand")
+    if isinstance(forecast_fig, str):
+        st.error(forecast_fig)
+    else:
+        st.pyplot(forecast_fig)
+
+    # Run the Random Forest model for demand prediction
+    st.subheader("Food Demand Prediction (Random Forest)")
+    random_forest_fig = predict_resource_demand_random_forest(historical_df)
+    if isinstance(random_forest_fig, str):
+        st.error(random_forest_fig)
+    else:
+        st.pyplot(random_forest_fig)
+
+    # Optimize resource allocation
+    st.subheader("Resource Allocation Optimization")
+    optimization_result = optimize_resource_allocation(df)
+    if isinstance(optimization_result, str):
+        st.error(optimization_result)
+    else:
+        st.write("Optimized Resource Allocation:", optimization_result)
+
+if __name__ == "__main__":
+    main()
